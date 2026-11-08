@@ -1,6 +1,7 @@
 # 杂草标注助手 · dsh-weed-annotation-assistant
 
 标注协作插件：插件只管协议与存档，怎么标注由 agent 现场决定。
+
 安装命令：
 
 ```
@@ -45,15 +46,29 @@ classic CV, a detector, a multimodal model, or manual work. No model is bundled.
 
 ## 安装
 
-**DSH 插件市场**：设置 → 插件 → 搜索 `weed-annotation-assistant`
+**命令行**（推荐，已实测）：
 
-**npm**（在插件管理的安装源里填）：
-
-```
-dsh-weed-annotation-assistant
+```powershell
+dsh plugin --profile <你的profile> add dsh-weed-annotation-assistant
 ```
 
-**离线包**：`npm pack` 产出的 `.tgz`，在插件管理里从文件安装。
+桌面客户端的 profile 固定是 `desktop`：
+
+```powershell
+dsh plugin --profile desktop add dsh-weed-annotation-assistant
+```
+
+装完重启 DSH：侧栏出现「标注复核」，对话中可直接调用 `anno_*` 工具。
+
+> 需要 dsh 0.2.x。安装后依赖记为 `^1.x`，之后的补丁版本会自动跟上。
+
+**离线安装**：从 [Releases](https://github.com/destinywalker2025-design/dsh-weed-annotation-assistant/releases) 下载 `dsh-weed-annotation-assistant-1.0.1.tgz`，然后：
+
+```powershell
+dsh plugin --profile desktop add <tgz 的绝对路径>
+```
+
+**插件市场**：尚未收录，目前请用上面的命令行方式。
 
 ## 快速开始
 
