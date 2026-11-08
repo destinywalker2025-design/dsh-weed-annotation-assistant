@@ -6,6 +6,14 @@
   "description": "Weed image annotation assistant for DSH: the plugin owns the data contract, storage, visual review and export; the agent decides how images are annotated.",
   "license": "MIT",
   "icon": "icon.svg",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/destinywalker2025-design/dsh-weed-annotation-assistant.git"
+  },
+  "homepage": "https://github.com/destinywalker2025-design/dsh-weed-annotation-assistant#readme",
+  "bugs": {
+    "url": "https://github.com/destinywalker2025-design/dsh-weed-annotation-assistant/issues"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
