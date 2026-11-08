@@ -1,0 +1,3 @@
+- insert:
+    - id: anno-agent
+      name: 'dsh-weed-annotation-assistant'

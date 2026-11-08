@@ -1,0 +1,42 @@
+{
+  "name": "dsh-weed-annotation-assistant",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Weed image annotation assistant for DSH: the plugin owns the data contract, storage, visual review and export; the agent decides how images are annotated.",
+  "license": "MIT",
+  "icon": "icon.svg",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "annotation",
+    "pascal-voc",
+    "labeling",
+    "agent",
+    "dataset"
+  ],
+  "engines": { "node": ">=20" },
+  "dshTarget": "0.2.x",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "docs/SPEC.md",
+    "docs/assets/*",
+    "tools/baseline.py"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "immediately": true }
+  }
+}
