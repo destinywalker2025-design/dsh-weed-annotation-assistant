@@ -39,18 +39,10 @@ for _stream in (sys.stdout, sys.stderr):
 CROP = "__crop__"
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
-# 内置中英对照（本项目的 7 类）：只用于把「稗草1」这类中文目录名映射成英文类名。
-# 不在表里的目录 == 别的项目自己的物种，直接用目录名当类名，不做任何限制。
-BUILTIN_CLASSES = [
-    ("barnyard_grass", "稗草"),
-    ("redroot_pigweed", "反枝苋"),
-    ("black_nightshade", "龙葵"),
-    ("purslane", "马齿苋"),
-    ("water_amaranth", "水苋菜"),
-    ("nutgrass", "香附子"),
-    ("horseweed", "小飞蓬"),
-]
-BUILTIN_ZH2EN = {zh: en for en, zh in BUILTIN_CLASSES}
+# 类别完全由调用方决定，脚本不内置任何物种名。
+#   优先级：--class-map 给的 {子目录名: 英文类名}  →  --train 里 XML 的 <name>
+#           →  refs 子目录名（原样使用，不做任何中英翻译）
+# 类名由插件按「参考图子文件夹 + 用户给的标签文档」算好后传进来。
 CROP_DIRS = ("作物", "crop", "negative", "empty", "背景", "non-weed", "nonweed")
 
 # 全局开关：True 时用四边形候选（实测更差，仅实验用）
@@ -93,11 +85,12 @@ def norm_ref_name(name: str) -> str:
     return s.strip()
 
 
-def discover_classes(train_dir, refs_dir, skip=frozenset()):
+def discover_classes(train_dir, refs_dir, skip=frozenset(), class_map=None):
     """类别完全由数据决定，不写死任何物种。
 
-    优先级：train XML 的 <name> → refs 子目录名（去尾号，命中内置中英表则转英文）。
-    返回 (classes, ref_map)，classes 有序且不含负样本；ref_map 记录每个参考图目录映射到哪个类。
+    class_map 形如 {"classes": ["barnyard_grass"], "folderMap": {"稗草1": "barnyard_grass"}}，
+    由插件按「参考图子文件夹 + 用户提供的标签文档」算好后传入，优先级最高。
+    否则回退到：--train 的 XML <name> → refs 子目录名（原样）。
     """
     classes, seen = [], set()
 
@@ -106,6 +99,11 @@ def discover_classes(train_dir, refs_dir, skip=frozenset()):
         if name and name != CROP and name not in seen:
             seen.add(name)
             classes.append(name)
+
+    class_map = class_map or {}
+    folder_map = class_map.get("folderMap") or {}
+    for c in class_map.get("classes") or []:
+        add(c)
 
     if train_dir and Path(train_dir).is_dir():
         for xml in sorted(Path(train_dir).glob("*.xml")):
@@ -128,11 +126,11 @@ def discover_classes(train_dir, refs_dir, skip=frozenset()):
             if any(k in low for k in CROP_DIRS):
                 ref_map[raw] = CROP
                 continue
-            cls = BUILTIN_ZH2EN.get(base) or BUILTIN_ZH2EN.get(raw)
-            if cls is None:
+            cls = folder_map.get(raw) or folder_map.get(base)
+            if not cls:
                 cls = known.get(base.lower()) or known.get(raw.lower())
-            if cls is None:
-                cls = base or raw  # 别人的物种：直接用目录名当类名
+            if not cls:
+                cls = base or raw  # 调用方没给映射：直接用目录名当类名
             ref_map[raw] = cls
             add(cls)
     return classes, ref_map
@@ -555,10 +553,8 @@ def load_bank(train_dir: Path | None, refs_dir: Path | None, skip=frozenset(), r
             base = norm_ref_name(raw)
             cls = ref_map.get(raw)
             if cls is None:
-                # 没走 discover_classes 时（如单独调用）就地推断
-                ref_map[raw] = CROP if any(k in (raw + base).lower() for k in CROP_DIRS) else (
-                    BUILTIN_ZH2EN.get(base) or BUILTIN_ZH2EN.get(raw) or base or raw
-                )
+                # 兜底：类名完全来自目录名，不查任何内置物种表
+                ref_map[raw] = CROP if any(k in (raw + base).lower() for k in CROP_DIRS) else (base or raw)
                 cls = ref_map[raw]
             for path in sorted(p for p in sub.iterdir() if p.suffix.lower() in IMG_EXT):
                 img = imread(path)
@@ -753,6 +749,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--refs", default="")
     ap.add_argument("--train", default="")
+    ap.add_argument("--class-map", default="", help="JSON 文件：{classes:[...], folderMap:{子目录: 英文类名}}（由插件传入）")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--conf", type=float, default=0.15)
     ap.add_argument("--only", default="", help="只处理文件列表（每行一个文件名）")
@@ -786,7 +783,14 @@ def main():
         skip = {x.strip() for x in Path(args.bank_skip).read_text(encoding="utf-8").splitlines() if x.strip()}
 
     emit("log", message=f"特征库构建：train={train_dir} refs={refs_dir}")
-    classes, ref_map = discover_classes(train_dir, refs_dir, skip)
+    class_map = None
+    if args.class_map:
+        try:
+            class_map = json.loads(Path(args.class_map).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            emit("error", message=f"--class-map 读取失败：{exc}")
+            return 2
+    classes, ref_map = discover_classes(train_dir, refs_dir, skip, class_map)
     if not classes:
         emit("error", message="没有发现任何类别：请提供含 <name> 的 VOC 标注，或带子目录的参考图目录")
         return 2

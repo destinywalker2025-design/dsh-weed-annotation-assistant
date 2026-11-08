@@ -1,4 +1,4 @@
-# 标注智能体协作协议 v2
+﻿# 标注智能体协作协议 v2
 
 > 本文件是**契约**。插件只实现这份契约：不规定怎么标注，只规定**结果长什么样、存在哪、怎么复核、怎么导出**。
 
@@ -11,21 +11,27 @@
 插件**不包含任何图像算法**。标注方法由 agent 现场决定：自带脚本、视觉判定、外部模型、人工手填，都可以。
 插件只认一件事：`anno_commit` 提交上来的结果是否符合本契约。
 
-## 1. 三个目录
+## 1. 输入契约
 
 | 参数 | 含义 | 必需 |
 |---|---|---|
 | `images` | 待标注图片目录 | 是 |
-| `refs` | 参考图目录：每个子目录一个类别 | 否 |
-| `train` | 已有 Pascal VOC 标注目录（`<name>` 即类名） | 否 |
+| `refs` | 杂草种类参考：每个种类一个子目录（放该类样例图）+ 一份说明各标签英文名的文档 | 是 |
+| `labeled` | 用户已手工标注的数据（Pascal VOC，可选；旧名 `train`） | 否 |
 | `out` | 输出目录（插件创建并独占管理） | 是 |
 
-`refs` 与 `train` 至少给一个（否则没有类名来源）；两者都给时，`train` 的 `<name>` 优先。
+缺任何一项时 `anno_open` **直接报错并说明缺什么**，由 agent 转述给用户补齐；
+插件不猜、不内置任何物种。
+
+标签文档可以是任意格式（txt / md / csv / xlsx / docx …），由 **agent 读取**后把
+`{子目录名: 英文类名}` 作为 `classMap` 传回，或者直接给 `classes` 列表。
 
 ## 2. 类别
 
-- 来源于：`anno_open` 的 `classes` 参数 → `train` 的 `<name>` → `refs` 子目录名（去首尾数字）。
-- 目录名中文合法。命中内置中英表（`稗草1` → `barnyard_grass`）时翻译，未命中则原样使用。
+- 唯一来源是用户给的数据，优先级：`classMap` / `classes`（agent 读完标签文档给出）
+  → `labeled` 的 `<name>` → `refs` 子目录名（原样使用，不做任何翻译）。
+- 插件**不内置任何物种名**；换杂草种类只换输入目录，不改代码。
+- 子目录名去首尾编号（`稗草1` → `稗草`）；负样本目录（作物 / crop / empty / 背景）不计入类别。
 - `anno_commit` 里出现未声明的类名时：**报错**，除非 `allowNewClasses: true`。
 - 负样本不在类别表里：用 `empty: true` 表示"只有作物"。
 
@@ -38,7 +44,7 @@
   ImageSets/Main/trainval.txt
   review.json                 唯一真源（见 §4）
   flags.json                  人工标记（见 §5）
-  project.json                建项目的参数（images/refs/train/classes/createdAt）
+  project.json                建项目的参数（images/refs/labeled/labelDocs/classMap/folderMap）
 ```
 
 XML 是 `review.json` 的**投影**：任何时候都可以用 `anno_commit` 重写，不存在"改了 XML 没改状态"。
@@ -48,7 +54,7 @@ XML 是 `review.json` 的**投影**：任何时候都可以用 `anno_commit` 重
 ```jsonc
 {
   "schema": 2,
-  "project": { "images": "...", "refs": "...", "train": "...", "createdAt": "..." },
+  "project": { "images": "...", "refs": "...", "labeled": "...", "labelDocs": ["..."], "classMap": {}, "folderMap": {}, "createdAt": "..." },
   "classes": ["barnyard_grass", "..."],
   "items": {
     "image177.jpg": {
@@ -95,7 +101,7 @@ XML 是 `review.json` 的**投影**：任何时候都可以用 `anno_commit` 重
 
 | 工具 | 参数 | 返回 |
 |---|---|---|
-| `anno_open` | `images`,`out`,`refs?`,`train?`,`classes?`,`fresh?` | 项目摘要 + 类别表 + 待标数量 |
+| `anno_open` | `images`,`out`,`refs`,`labeled?`,`classMap?`,`classes?`,`fresh?` | 项目摘要 + 类别表 + 待标数量 |
 | `anno_worklist` | `out`,`cursor?`,`limit?=50`,`filter?` | 待处理文件清单（未标 / 被标记 / 全部） |
 | `anno_commit` | `out`,`items[]`,`allowNewClasses?` | `{written, skipped[], classesAdded[]}` |
 | `anno_review` | `out` | 进度 + 类别分布 + 人工标记（按四类聚合） |

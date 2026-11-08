@@ -191,44 +191,75 @@ function summarize(review, flags) {
 }
 
 // ---------------------------------------------------------------- 类别发现
-
-const BUILTIN = {
-  稗草: 'barnyard_grass',
-  反枝苋: 'redroot_pigweed',
-  龙葵: 'black_nightshade',
-  马齿苋: 'purslane',
-  水苋菜: 'water_amaranth',
-  香附子: 'nutgrass',
-  小飞蓬: 'horseweed',
-}
+//
+// 类别完全由用户给的数据决定，插件不内置任何物种名。
+// 来源优先级：AI 读标签文档后给的 classMap / classes → 手工标注 XML 的 <name>
+// → refs 子目录名（原样使用，不做任何中英翻译）。
+//
+// 用户的输入契约（缺任何一项都要向用户要）：
+//   images/   待标注图片            （必需）
+//   refs/     每种杂草一个子文件夹 + 一份说明标签英文名的文档（必需）
+//   labeled/  用户已手工标注的数据   （可选）
 
 const normName = (s) => String(s || '').replace(/^\d+[\s._-]*/, '').replace(/[\s._-]*\d+$/, '').trim()
+const CROP_RE = /作物|crop|negative|empty|背景|non-?weed/i
 
-function discoverClasses(refsDir, trainDir, explicit) {
+function listRefDirs(refsDir) {
+  if (!refsDir || !fs.existsSync(refsDir)) return []
+  return fs
+    .readdirSync(refsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+}
+
+/** refs 根目录下非图片的文件＝标签说明文档（任何格式，用户随便写，AI 来读）。 */
+function findLabelDocs(refsDir) {
+  if (!refsDir || !fs.existsSync(refsDir)) return []
+  return fs
+    .readdirSync(refsDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && !IMG_EXT.has(path.extname(e.name).toLowerCase()))
+    .map((e) => e.name)
+    .sort()
+}
+
+function discoverClasses({ refsDir, labeledDir, explicit, classMap }) {
   const classes = []
+  const folderMap = {}
   const add = (c) => {
     const v = String(c || '').trim()
     if (v && !classes.includes(v)) classes.push(v)
   }
+  const map = {}
+  for (const [k, v] of Object.entries(classMap || {})) {
+    const folder = String(k || '').trim()
+    const cls = String(v || '').trim()
+    if (!folder || !cls) continue
+    map[folder] = cls
+    map[normName(folder)] = cls
+    add(cls)
+  }
   for (const c of explicit || []) add(c)
 
-  if (trainDir && fs.existsSync(trainDir)) {
-    for (const f of fs.readdirSync(trainDir).filter((x) => x.toLowerCase().endsWith('.xml')).sort()) {
+  if (labeledDir && fs.existsSync(labeledDir)) {
+    for (const f of fs.readdirSync(labeledDir).filter((x) => x.toLowerCase().endsWith('.xml')).sort()) {
       try {
-        const xml = fs.readFileSync(path.join(trainDir, f), 'utf8')
+        const xml = fs.readFileSync(path.join(labeledDir, f), 'utf8')
         for (const m of xml.matchAll(/<name>([\s\S]*?)<\/name>/g)) add(m[1].trim())
       } catch {}
     }
   }
 
-  if (refsDir && fs.existsSync(refsDir)) {
-    for (const d of fs.readdirSync(refsDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()) {
-      const base = normName(d)
-      if (/作物|crop|negative|empty|背景/i.test(d)) continue
-      add(BUILTIN[base] || BUILTIN[d] || base || d)
+  for (const d of listRefDirs(refsDir)) {
+    if (CROP_RE.test(d)) {
+      folderMap[d] = ''
+      continue
     }
+    const cls = map[d] || map[normName(d)] || normName(d) || d
+    folderMap[d] = cls
+    add(cls)
   }
-  return classes
+  return { classes, folderMap }
 }
 
 // ---------------------------------------------------------------- Python（仅可选基线）
@@ -496,37 +527,101 @@ export function apply(ctx) {
     const disposers = [
       T(
         'anno_open',
-        'Create or reopen an annotation project: copies/hardlinks the images, discovers the class list, and returns the counts. Call this first, then anno_worklist to fetch files to annotate.',
+        'Create or reopen an annotation project. Required inputs: images (folder of images to annotate) and refs (one sub-folder per weed species, plus one document naming each species\' English label). Optional: labeled (folder with the user\'s own Pascal VOC / manual labels). If a required input or the label document is missing, this tool fails with an explicit request you must relay to the user.',
         {
-          images: { type: 'string', description: 'Assembly image folder to annotate.' },
-          out: { type: 'string', description: 'Output folder (created if missing).' },
-          refs: { type: 'string', description: 'Optional reference folder: one sub-folder per class.' },
-          train: { type: 'string', description: 'Optional existing Pascal VOC folder; its <name> values are classes.' },
-          classes: { type: 'array', items: { type: 'string' }, description: 'Optional explicit class list.' },
-          fresh: { type: 'boolean', description: 'true drops previous results and starts over.' },
+          images: { type: 'string', description: '待标注图片文件夹（必需）' },
+          out: { type: 'string', description: '项目输出目录（必需，不存在会创建）' },
+          refs: { type: 'string', description: '杂草参考文件夹（必需）：每个种类一个子文件夹 + 一份说明标签英文名的文档' },
+          labeled: { type: 'string', description: '可选：用户已手工标注的数据文件夹（Pascal VOC XML）' },
+          train: { type: 'string', description: 'labeled 的旧名，等价' },
+          classMap: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            description: '读完标签文档后给出的映射：{"子文件夹名": "english_label"}',
+          },
+          classes: { type: 'array', items: { type: 'string' }, description: '已确定的英文类名列表（代替 classMap）' },
+          fresh: { type: 'boolean', description: 'true 清空既有结果重来' },
         },
-        ['images', 'out'],
+        ['images', 'out', 'refs'],
         async (a) => {
           const imagesDir = path.resolve(String(a.images || ''))
           const out = path.resolve(String(a.out || ''))
-          if (!imagesDir || !fs.existsSync(imagesDir)) throw new Error(`图片目录不存在：${imagesDir}`)
-          const refs = a.refs ? path.resolve(String(a.refs)) : ''
-          const train = a.train ? path.resolve(String(a.train)) : ''
+          const refs = path.resolve(String(a.refs || ''))
+          const labeled = path.resolve(String(a.labeled || a.train || ''))
+
+          // ---- 输入契约校验：缺什么就明确要什么 ----
+          if (!a.images || !fs.existsSync(imagesDir)) {
+            throw new Error(`缺少「待标注图片」文件夹：请提供一个存放待标注图片的文件夹路径（参数 images）。当前值：${imagesDir || '（空）'}`)
+          }
+          const files = fs.readdirSync(imagesDir).filter((f) => IMG_EXT.has(path.extname(f).toLowerCase())).sort()
+          if (!files.length) throw new Error(`「待标注图片」文件夹里没有图片：${imagesDir}（支持 jpg/jpeg/png/bmp/webp）`)
+
+          if (!a.refs || !fs.existsSync(refs)) {
+            throw new Error(`缺少「杂草种类参考」文件夹：请提供一个文件夹，里面每个杂草种类一个子文件夹（放该类样例图），并附一份说明各标签英文名的文档（参数 refs）。当前值：${refs || '（空）'}`)
+          }
+          const refDirs = listRefDirs(refs)
+          const labelDocs = findLabelDocs(refs)
+          if (!refDirs.length) {
+            throw new Error(`参考文件夹里没有任何「种类子文件夹」：${refs}\n请把每种杂草的样例图各自放进一个子文件夹，并在这一层放一份文档说明每个子文件夹对应的英文标签名。\n当前这一层只有文件：${labelDocs.join(', ') || '（无）'}`)
+          }
+          if (a.labeled || a.train) {
+            if (!fs.existsSync(labeled)) throw new Error(`「手工标注」文件夹不存在：${labeled}`)
+          }
+
+          const classMap = a.classMap && typeof a.classMap === 'object' ? a.classMap : {}
+          const explicit = Array.isArray(a.classes) ? a.classes : []
+          const discovered = discoverClasses({
+            refsDir: refs,
+            labeledDir: a.labeled || a.train ? labeled : '',
+            explicit,
+            classMap,
+          })
+          const classes = discovered.classes
+          const folderMap = discovered.folderMap
+          const providedNames = Object.keys(classMap).length > 0 || explicit.length > 0
+          const nonAscii = classes.filter((c) => /[^\x00-\x7F]/.test(c))
+
+          if (!classes.length) {
+            throw new Error(`没能确定任何类别。\n参考文件夹：${refs}\n子文件夹：${refDirs.join(', ')}\n请先读标签文档（${labelDocs.join(', ') || '未找到文档'}），再用 classMap 传入 {"子文件夹名":"english_label"}。`)
+          }
+          if (!providedNames && nonAscii.length && labelDocs.length) {
+            throw new Error(
+              `发现参考子文件夹，但类名还不是英文：${nonAscii.join(', ')}\n` +
+                `请先读标签文档 ${labelDocs.map((d) => path.join(refs, d)).join(', ')}，` +
+                `再用 classMap 传入映射，例如 {"${refDirs[0]}":"barnyard_grass"}。`,
+            )
+          }
+          if (!providedNames && !labelDocs.length) {
+            throw new Error(
+              `参考文件夹里缺少「标签说明文档」：${refs}\n` +
+                `请用户在 refs 这一层放一份文档（任何格式），写明每个种类子文件夹对应的英文标签名；` +
+                `或者直接把映射作为 classMap 传进来。\n子文件夹：${refDirs.join(', ')}`,
+            )
+          }
+
           const p = projectPaths(out)
           for (const d of [p.images, p.ann, p.sets]) fs.mkdirSync(d, { recursive: true })
-
-          const files = fs.readdirSync(imagesDir).filter((f) => IMG_EXT.has(path.extname(f).toLowerCase())).sort()
-          if (!files.length) throw new Error(`目录里没有图片：${imagesDir}`)
           for (const f of files) linkOrCopy(path.join(imagesDir, f), path.join(p.images, f))
-
-          const classes = discoverClasses(refs, train, a.classes)
-          if (!classes.length) throw new Error('没有发现任何类别：请给 classes、refs 或 train 至少一个')
 
           setActive(out)
 
           let review = a.fresh ? null : loadReview(out)
           if (!review) {
-            review = { schema: 2, project: { images: imagesDir, refs, train, createdAt: new Date().toISOString() }, classes, items: {}, total: files.length }
+            review = {
+              schema: 2,
+              project: {
+                images: imagesDir,
+                refs,
+                labeled: a.labeled || a.train ? labeled : '',
+                labelDocs: labelDocs.map((d) => path.join(refs, d)),
+                classMap,
+                folderMap,
+                createdAt: new Date().toISOString(),
+              },
+              classes,
+              items: {},
+              total: files.length,
+            }
             if (!fs.existsSync(p.flags)) saveFlags(out, {})
           } else {
             for (const c of classes) if (!review.classes.includes(c)) review.classes.push(c)
@@ -539,6 +634,8 @@ export function apply(ctx) {
           return {
             out,
             classes: review.classes,
+            refFolders: refDirs,
+            labelDoc: labelDocs.map((d) => path.join(refs, d)),
             images: files.length,
             labeled: Object.keys(review.items).length,
             remaining: files.length - Object.keys(review.items).length,
@@ -684,10 +781,21 @@ export function apply(ctx) {
           if (!review) throw new Error('不是标注项目，先调 anno_open')
           if (!fs.existsSync(BASELINE)) throw new Error('没有附带基线脚本（tools/baseline.py），请直接 anno_commit 自备结果')
           const tmp = path.join(out, '_baseline')
+          fs.mkdirSync(tmp, { recursive: true })
           const py = resolvePython()
           const args = [BASELINE, '--images', projectPaths(out).images, '--out', tmp]
           if (review.project?.refs) args.push('--refs', review.project.refs)
-          if (review.project?.train) args.push('--train', review.project.train)
+          if (review.project?.labeled) args.push('--train', review.project.labeled)
+          // 类别一律以项目为准（来自用户给的参考图 + 标签文档），基线脚本不内置任何物种
+          if (Array.isArray(review.classes) && review.classes.length) {
+            const mapFile = path.join(tmp, 'class-map.json')
+            fs.writeFileSync(
+              mapFile,
+              JSON.stringify({ classes: review.classes, folderMap: review.project?.folderMap || {} }, null, 2),
+              'utf8',
+            )
+            args.push('--class-map', mapFile)
+          }
           if (Number(a.limit) > 0) args.push('--limit', String(Number(a.limit)))
           const proc = spawnSync(py.command, [...py.prefix, ...args], {
             timeout: 1_800_000, windowsHide: true, encoding: 'utf8',
