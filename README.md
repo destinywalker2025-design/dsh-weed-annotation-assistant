@@ -1,6 +1,7 @@
 # 杂草标注助手 · dsh-weed-annotation-assistant
 
 标注协作插件：插件只管协议与存档，怎么标注由 agent 现场决定。
+安装命令：
 
 ```
 dsh plugin --profile <你的profile> add dsh-weed-annotation-assistant
