@@ -50,7 +50,7 @@ classic CV, a detector, a multimodal model, or manual work. No model is bundled.
 **npm**（在插件管理的安装源里填）：
 
 ```
-dsh-weed-annotation-assistant@1.0.0
+dsh-weed-annotation-assistant
 ```
 
 **离线包**：`npm pack` 产出的 `.tgz`，在插件管理里从文件安装。
