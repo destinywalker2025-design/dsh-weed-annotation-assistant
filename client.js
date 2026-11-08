@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: 'dsh-anno-agent',
+  id: 'dsh-weed-annotation-assistant',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -414,6 +414,6 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: NS, order: 12, locale: NS, label }, Icon))
     }
 
-    return { name: 'dsh-anno-agent', inject: ['slots', 'locale'], apply }
+    return { name: 'dsh-weed-annotation-assistant', inject: ['slots', 'locale'], apply }
   },
 })

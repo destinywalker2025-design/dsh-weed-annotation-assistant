@@ -1,6 +1,6 @@
 {
   "name": "dsh-weed-annotation-assistant",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "type": "module",
   "description": "Weed image annotation assistant for DSH: the plugin owns the data contract, storage, visual review and export; the agent decides how images are annotated.",
@@ -23,7 +23,9 @@
     "agent",
     "dataset"
   ],
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dshTarget": "0.2.x",
   "exports": {
     ".": "./index.js",
@@ -44,7 +46,12 @@
     "tools/baseline.py"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web", "immediately": true }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
   }
 }
