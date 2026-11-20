@@ -135,7 +135,86 @@ function saveFlags(out, flags) {
   writeJson(projectPaths(out).flags, flags)
 }
 
-/** 把一条结果落成 VOC XML：多边形优先，其次 bbox，其次空标注。 */
+// ---------------------------------------------------------------- 图片尺寸（VOC <size> 用真实值）
+
+const sizeCache = new Map()
+
+/** 从文件头解析宽高，不依赖任何图像库；解析不了返回 null。 */
+function parseImageSize(buf) {
+  if (!buf || buf.length < 24) return null
+  // PNG: 8 字节签名 + IHDR
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+  }
+  // BMP: 'BM'
+  if (buf[0] === 0x42 && buf[1] === 0x4d) {
+    return { w: Math.abs(buf.readInt32LE(18)), h: Math.abs(buf.readInt32LE(22)) }
+  }
+  // WebP: 'RIFF' .... 'WEBP'
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+    const fmt = buf.toString('ascii', 12, 16)
+    if (fmt === 'VP8X' && buf.length >= 30) {
+      return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) }
+    }
+    if (fmt === 'VP8 ' && buf.length >= 30) {
+      return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff }
+    }
+    if (fmt === 'VP8L' && buf.length >= 25) {
+      const bits = buf.readUInt32LE(21)
+      return { w: (bits & 0x3fff) + 1, h: ((bits >> 14) & 0x3fff) + 1 }
+    }
+    return null
+  }
+  // JPEG: 扫 SOF 段
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let i = 2
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) {
+        i += 1
+        continue
+      }
+      const marker = buf[i + 1]
+      if (marker === 0xff) {
+        i += 1
+        continue
+      }
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        i += 2
+        continue
+      }
+      const len = buf.readUInt16BE(i + 2)
+      const isSOF = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+      if (isSOF) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) }
+      if (len < 2) break
+      i += 2 + len
+    }
+  }
+  return null
+}
+
+function imageSize(absPath) {
+  if (sizeCache.has(absPath)) return sizeCache.get(absPath)
+  let dim = null
+  try {
+    const fd = fs.openSync(absPath, 'r')
+    try {
+      // 先只读 16 KB（绝大多数图片的头部尺寸都在这段内），解析失败再读 512 KB
+      for (const cap of [16 * 1024, 512 * 1024]) {
+        const buf = Buffer.alloc(cap)
+        const n = fs.readSync(fd, buf, 0, cap, 0)
+        dim = parseImageSize(buf.subarray(0, n))
+        if (dim) break
+        if (n < cap) break
+      }
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {}
+  sizeCache.set(absPath, dim)
+  return dim
+}
+
+/** 把一条结果落成 VOC XML：多边形优先，其次 bbox，其次空标注。<size> 取图片真实宽高。 */
 function writeXml(out, item, size) {
   const p = projectPaths(out)
   const pts = Array.isArray(item.polygon) && item.polygon.length >= 3
@@ -150,8 +229,9 @@ function writeXml(out, item, size) {
   const objectXml = useObject
     ? `  <object>\n    <name>${escapeXml(item.class)}</name>\n    <pose>Unspecified</pose>\n    <truncated>0</truncated>\n    <difficult>0</difficult>\n    <polygon>\n${poly}\n    </polygon>\n  </object>\n`
     : ''
-  const w = (size && size.w) || item.w || 640
-  const h = (size && size.h) || item.h || 480
+  const dim = imageSize(path.join(p.images, item.file))
+  const w = (size && size.w) || item.w || (dim && dim.w) || 640
+  const h = (size && size.h) || item.h || (dim && dim.h) || 480
   const xml =
     `<?xml version="1.0" encoding="utf-8"?>\n<annotation>\n  <folder>JPEGImages</folder>\n` +
     `  <filename>${escapeXml(item.file)}</filename>\n` +
@@ -220,6 +300,8 @@ function findLabelDocs(refsDir) {
     .readdirSync(refsDir, { withFileTypes: true })
     .filter((e) => e.isFile() && !IMG_EXT.has(path.extname(e.name).toLowerCase()))
     .map((e) => e.name)
+    // 过滤 Office 锁文件（~$xxx.docx）、编辑器临时文件与隐藏文件
+    .filter((n) => !/^[~.]|^\$/.test(n) && !/\.(tmp|swp|temp)$/i.test(n))
     .sort()
 }
 
@@ -585,10 +667,12 @@ export function apply(ctx) {
             throw new Error(`没能确定任何类别。\n参考文件夹：${refs}\n子文件夹：${refDirs.join(', ')}\n请先读标签文档（${labelDocs.join(', ') || '未找到文档'}），再用 classMap 传入 {"子文件夹名":"english_label"}。`)
           }
           if (!providedNames && nonAscii.length && labelDocs.length) {
+            const exampleFolder = refDirs.find((d) => !CROP_RE.test(d)) || refDirs[0]
             throw new Error(
               `发现参考子文件夹，但类名还不是英文：${nonAscii.join(', ')}\n` +
                 `请先读标签文档 ${labelDocs.map((d) => path.join(refs, d)).join(', ')}，` +
-                `再用 classMap 传入映射，例如 {"${refDirs[0]}":"barnyard_grass"}。`,
+                `再用 classMap 传入映射，例如 {"${exampleFolder}":"english_label"}；` +
+                `负样本目录（作物/crop/empty）映射为空字符串即可。`,
             )
           }
           if (!providedNames && !labelDocs.length) {
